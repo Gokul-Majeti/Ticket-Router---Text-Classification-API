@@ -12,12 +12,12 @@ Why FastAPI specifically:
 import time
 import sqlite3
 import os
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 
 import joblib
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Load model artifacts ONCE at startup, not per-request.
@@ -31,10 +31,17 @@ DB_PATH = os.path.join(BASE_DIR, "data", "predictions.db")
 model = joblib.load(MODEL_PATH)
 vectorizer = joblib.load(VECTORIZER_PATH)
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
+
+
 app = FastAPI(
     title="Ticket Router API",
     description="Classifies incoming text into a category (business/entertainment/politics/sport/tech).",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 
@@ -45,6 +52,14 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 class PredictRequest(BaseModel):
     text: str = Field(..., min_length=1, description="The text to classify")
+
+    @field_validator("text")
+    @classmethod
+    def text_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("text must not be blank")
+        return stripped
 
 
 class PredictResponse(BaseModel):
@@ -102,11 +117,6 @@ def log_prediction(text: str, category: str, confidence: float, latency_ms: floa
         conn.commit()
 
 
-@app.on_event("startup")
-def startup():
-    init_db()
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -124,9 +134,9 @@ def predict(req: PredictRequest):
     probs = model.predict_proba(vec)[0]
     classes = model.classes_
 
-    scores = {cls: float(p) for cls, p in zip(classes, probs)}
+    scores = {str(cls): float(p) for cls, p in zip(classes, probs)}
     best_idx = probs.argmax()
-    predicted_category = classes[best_idx]
+    predicted_category = str(classes[best_idx])
     confidence = float(probs[best_idx])
 
     latency_ms = (time.perf_counter() - start) * 1000

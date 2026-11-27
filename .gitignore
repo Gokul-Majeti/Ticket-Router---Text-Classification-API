@@ -10,3 +10,6 @@ data/predictions.db
 
 # IDE
 .idea/
+
+# Testing
+.pytest_cache/
